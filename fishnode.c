@@ -124,10 +124,12 @@ int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto)
    return 0;  // The return value is ignored
 }
 
-int my_fishnode_l2_receive(void *l2frame)
-{
+int my_fishnode_l2_receive(void *l2frame) {
    // Access the received L2 frame directly from l2frame
-   struct L2_hdr *L2_fish = (struct L2_hdr *)l2frame;
+   // struct L2_hdr *L2_fish = (struct L2_hdr *)l2frame;
+   struct L2_hdr *L2_fish = malloc(sizeof(struct L2_hdr));
+   memset(l2frame, 0, sizeof(struct L2_hdr));
+   memcpy(l2frame, L2_fish, sizeof(struct L2_hdr));
 
    // Step 1: Validate the checksum
    uint16_t original_checksum = L2_fish->checksum;
@@ -136,24 +138,30 @@ int my_fishnode_l2_receive(void *l2frame)
 
    if (original_checksum != calculated_checksum) {
       // Drop the frame if the checksum is invalid
-      printf("Invalid checksum. Dropping the frame.\n");
+      // printf("Invalid checksum. Dropping the frame.\n");
       return 1; // Frame dropped
    }
 
-   // Step 2: Check if the frame is destined for this node
+   // Step 2: Check if the frame is destined for this node or broadcast
    fn_l2addr_t my_address = fish_getl2address(); // Get this node's L2 address
-   if (memcmp(&L2_fish->dst, &my_address, sizeof(fn_l2addr_t)) != 0) {
-      // Drop the frame if it is not destined for this node
-      printf("Frame not destined for this node. Dropping the frame.\n");
-      return 1; // Frame dropped
+
+   if (memcmp(&L2_fish->dst, &ALL_L2_NEIGHBORS, sizeof(fn_l2addr_t)) == 0) {
+       // Broadcast frame handling
+      //  printf("Broadcast frame received.\n");
+       void *l3frame = (void *)((char *)l2frame + sizeof(struct L2_hdr));
+       int l3_length = ntohs(L2_fish->len) - sizeof(struct L2_hdr);
+       fish_l3.fishnode_l3_receive(l3frame, l3_length);
+   } else if (memcmp(&L2_fish->dst, &my_address, sizeof(fn_l2addr_t)) == 0) {
+       // Frame destined for this node
+      //  printf("Frame destined for this node.\n");
+       void *l3frame = (void *)((char *)l2frame + sizeof(struct L2_hdr));
+       int l3_length = ntohs(L2_fish->len) - sizeof(struct L2_hdr);
+       fish_l3.fishnode_l3_receive(l3frame, l3_length);
+   } else {
+       // Frame not destined for this node, drop it
+      //  printf("Frame not destined for this node. Dropping.\n");
+       return 0;
    }
-
-   // Step 3: Decapsulate the frame and pass it up to Layer 3
-   void *l3frame = (void *)((char *)l2frame + sizeof(struct L2_hdr));
-   int l3_length = ntohs(L2_fish->len) - sizeof(struct L2_hdr); // Length of the L3 frame
-
-   // Call the Layer 3 receive function
-   fish_l3.fishnode_l3_receive(l3frame, l3_length);
 
    return 0; // Successfully processed the frame
 }
@@ -274,7 +282,7 @@ int main(int argc, char **argv)
 
 #ifdef L2_IMPL
    // Examples of overriding function pointers for program 2 base functionality
-   // fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
+   fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
    fish_l2.fish_l2_send = &my_fish_l2_send;
    // fish_arp.arp_received = &my_arp_received;
    // fish_arp.send_arp_request = &my_send_arp_request;

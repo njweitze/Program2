@@ -20,15 +20,15 @@ struct L2_hdr {
     uint8_t protocol;
 } __attribute__((packed));
 
-struct ARP_Packet {
-    uint8_t query_type;       // 1 byte: Query Type (1 for request, 2 for response)
-    fnaddr_t queried_l3addr;  // 4 bytes: Queried L3 Address (e.g., IP address)
-    fn_l2addr_t l2addr;       // 6 bytes: L2 Address for the Queried L3 Address (only valid in responses)
+struct ARP_pkt {
+    uint32_t query_type;
+    fnaddr_t queried_l3addr;
+    fn_l2addr_t l2addr; 
 } __attribute__((packed));
 
 void print_l2_frame(void *l2frame);
 int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto);
-int my_fishnode_l2_receive(void *l2frame);
+int my_fishnode_l2_receive(void *l2_frame);
 void my_arp_received(void *l2frame);
 void my_send_arp_request(fnaddr_t l3addr);
 void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout);

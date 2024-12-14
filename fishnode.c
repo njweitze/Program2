@@ -1,5 +1,6 @@
 #include "fish.h"
 #include "fishnode.h"
+#include "smartalloc.h"
 #include <assert.h>
 #include <signal.h>
 #include <string.h>
@@ -67,114 +68,200 @@ static void keyboard_callback(char *line)
 // Prototypes for program 2.  Taken directly from fish.h header file
 #ifdef L2_IMPL
 
-// Define arp_callback as a separate function
 void arp_callback(fn_l2addr_t addr, void *param) {
-   // printf("In tha callback fn\n");
-   struct L2_hdr *L2_fish = (struct L2_hdr *)param;  // Cast param to L2_hdr pointer
+   struct L2_hdr *L2_fish = (struct L2_hdr *)param;  // cast param to L2_hdr pointer
 
    if (!FNL2_VALID(addr)) {
       printf("Failed to resolve L3 address to L2\n");
-      free(param);  // Free the allocated memory for the L2 frame
+      free(param);  // free allocated memory for the L2 frame
       return;
    }
 
-   // Set the destination (resolved L2 address)
+   // set destination
    L2_fish->dst = addr;
 
    L2_fish->checksum = in_cksum(param, ntohs(L2_fish->len));
    memcpy(param, L2_fish, sizeof(struct L2_hdr));
 
-   // Call L1 send to transmit the frame
+   // call L1 send to transmit frame
    fish_l1_send(L2_fish);
 
-   // print_l2_frame(L2_fish);
-
-   // Free the allocated memory for the L2 frame
    free(param);
 }
 
 int my_fish_l2_send(void *l3frame, fnaddr_t next_hop, int len, uint8_t l2_proto) {
-   // Allocate memory for the L2 frame (L2 header + L3 frame)
-   struct L2_hdr *L2_fish = malloc(sizeof(struct L2_hdr));
-   memset(L2_fish, 0, sizeof(struct L2_hdr));
-   int total_len = sizeof(struct L2_hdr) + len;  // Total length of L2 frame
-   void *l2frame = malloc(total_len);
-   memset(l2frame, 0, total_len);
+    // allocate memory for L2 frame
+    struct L2_hdr *L2_fish = malloc(sizeof(struct L2_hdr));
+    memset(L2_fish, 0, sizeof(struct L2_hdr));
+    int total_len = sizeof(struct L2_hdr) + len;  // length L2 frame
+    void *l2_frame = malloc(total_len);
+    memset(l2_frame, 0, total_len);
 
-   if (!l2frame) {
-      printf("Memory allocation for L2 frame failed\n");
-      return -1;
-   }
+    if (!l2_frame) {
+        return -1;
+    }
 
-   L2_fish->src = fish_getl2address();    // Set source address (L2)
-   L2_fish->len = htons(total_len);                  // Set length
-   L2_fish->protocol = l2_proto;        // Set L2 protocol
-   memcpy(l2frame, L2_fish, sizeof(struct L2_hdr));
-   // L2_fish = (struct L2_hdr *)l2frame;  // Point to the L2 header
+    L2_fish->src = fish_getl2address();
+    L2_fish->len = htons(total_len);
+    L2_fish->protocol = l2_proto;
+    memcpy(l2_frame, L2_fish, sizeof(struct L2_hdr));
 
-   // Copy L3 frame into the L2 frame, right after the L2 header
-   memcpy(l2frame + sizeof(struct L2_hdr), l3frame, len);
+    // copy L3 frame into L2 frame after header
+    memcpy(l2_frame + sizeof(struct L2_hdr), l3frame, len);
 
-   arp_resolution_cb cb = arp_callback;
+    arp_resolution_cb cb = arp_callback;
 
-   // Resolve the L3 address (next_hop) to the L2 address and pass the L2 frame as param
-   fish_arp.resolve_fnaddr(next_hop, cb, l2frame);
-   
-   // printf("Made it to the end\n");
-   return 0;  // The return value is ignored
+    // resolve L3 address to L2 address and pass the L2 frame as param
+    fish_arp.resolve_fnaddr(next_hop, cb, l2_frame);
+    free(L2_fish);
+
+    return 0;
 }
+
 
 int my_fishnode_l2_receive(void *l2frame) {
-   // Access the received L2 frame directly from l2frame
-   // struct L2_hdr *L2_fish = (struct L2_hdr *)l2frame;
-   struct L2_hdr *L2_fish = malloc(sizeof(struct L2_hdr));
-   memset(l2frame, 0, sizeof(struct L2_hdr));
-   memcpy(l2frame, L2_fish, sizeof(struct L2_hdr));
 
-   // Step 1: Validate the checksum
-   uint16_t original_checksum = L2_fish->checksum;
-   L2_fish->checksum = 0;  // Set the checksum field to zero in l2frame for calculation
-   uint16_t calculated_checksum = in_cksum(l2frame, ntohs(L2_fish->len));
+   struct L2_hdr *l2_f = malloc(sizeof(struct L2_hdr));
+   memset(l2_f, 0, sizeof(struct L2_hdr));
+   memcpy(l2_f, l2frame, sizeof(struct L2_hdr));
 
-   if (original_checksum != calculated_checksum) {
-      // Drop the frame if the checksum is invalid
-      // printf("Invalid checksum. Dropping the frame.\n");
-      return 1; // Frame dropped
+   // Validate checksum in_cksum
+   if (in_cksum(l2frame, ntohs(l2_f->len)) != 0) {
+      free(l2_f);
+      return -1; // dropped
    }
 
-   // Step 2: Check if the frame is destined for this node or broadcast
-   fn_l2addr_t my_address = fish_getl2address(); // Get this node's L2 address
+   // check if target
+   fn_l2addr_t l2_addr = fish_getl2address();
+   if (!FNL2_EQ(l2_f->dst, l2_addr) && !FNL2_EQ(l2_f->dst, ALL_L2_NEIGHBORS)) {
+      free(l2_f);
+      return -1; // dropped
+   }
 
-   if (memcmp(&L2_fish->dst, &ALL_L2_NEIGHBORS, sizeof(fn_l2addr_t)) == 0) {
-       // Broadcast frame handling
-      //  printf("Broadcast frame received.\n");
-       void *l3frame = (void *)((char *)l2frame + sizeof(struct L2_hdr));
-       int l3_length = ntohs(L2_fish->len) - sizeof(struct L2_hdr);
-       fish_l3.fishnode_l3_receive(l3frame, l3_length);
-   } else if (memcmp(&L2_fish->dst, &my_address, sizeof(fn_l2addr_t)) == 0) {
-       // Frame destined for this node
-      //  printf("Frame destined for this node.\n");
-       void *l3frame = (void *)((char *)l2frame + sizeof(struct L2_hdr));
-       int l3_length = ntohs(L2_fish->len) - sizeof(struct L2_hdr);
-       fish_l3.fishnode_l3_receive(l3frame, l3_length);
+   // handle ARP packet
+   if (l2_f->protocol == 2) {
+      fish_arp.arp_received(l2frame);
    } else {
-       // Frame not destined for this node, drop it
-      //  printf("Frame not destined for this node. Dropping.\n");
-       return 0;
+      uint16_t l3_length = htons(l2_f->len) - sizeof(struct L2_hdr);
+      fish_l3.fish_l3_receive(l2frame + sizeof(struct L2_hdr), l3_length);
    }
 
-   return 0; // Successfully processed the frame
-}
-
-void my_arp_received(void *l2frame) 
-{
+   free(l2_f);
+   return 0;
 }
 
 
+void my_arp_received(void *l2frame) {
+   // extract L2 header and ARP packet
+   struct L2_hdr *l2_h = (struct L2_hdr *)malloc(sizeof(struct L2_hdr));
 
-void my_send_arp_request(fnaddr_t l3addr)
-{
-   
+   memset(l2_h, 0, sizeof(struct L2_hdr));
+   memcpy(l2_h, l2frame, sizeof(struct L2_hdr)); // copy L2 header data
+
+   struct ARP_pkt *arp_p = (struct ARP_pkt *)malloc(sizeof(struct ARP_pkt));
+   if (!arp_p) {
+      free(l2_h);
+      return;
+   }
+   memset(arp_p, 0, sizeof(struct ARP_pkt));
+   memcpy(arp_p, (char *)l2frame + sizeof(struct L2_hdr), sizeof(struct ARP_pkt)); // offset
+
+   // handle ARP Request
+   if (ntohl(arp_p->query_type) == 1) { // ARP Request
+      // ignore if not the target or invalid destination
+      if (!FNL2_EQ(l2_h->dst, ALL_L2_NEIGHBORS) && !FNL2_VALID(l2_h->dst)) {
+         free(l2_h);
+         free(arp_p);
+         return;
+      }
+      if (arp_p->queried_l3addr != fish_getaddress()) {
+         free(l2_h);
+         free(arp_p);
+         return;
+      }
+
+      // create L2 header for the ARP response
+      struct L2_hdr *resp_l2_h = (struct L2_hdr *)malloc(sizeof(struct L2_hdr));
+
+      memset(resp_l2_h, 0, sizeof(struct L2_hdr));
+      resp_l2_h->dst = l2_h->src;
+      resp_l2_h->src = fish_getl2address();
+      resp_l2_h->protocol = 2;
+      resp_l2_h->len = htons(sizeof(struct L2_hdr) + sizeof(struct ARP_pkt));
+
+      // create ARP response packet
+      struct ARP_pkt *resp_arp_p = (struct ARP_pkt *)malloc(sizeof(struct ARP_pkt));
+
+      memset(resp_arp_p, 0, sizeof(struct ARP_pkt));
+      resp_arp_p->query_type = htonl(2); // ARP Response
+      resp_arp_p->queried_l3addr = fish_getaddress();
+      resp_arp_p->l2addr = fish_getl2address();
+
+      // allocate memory for complete ARP response
+      uint16_t size_resp = sizeof(struct L2_hdr) + sizeof(struct ARP_pkt);
+      void *resp = malloc(size_resp);
+      memset(resp, 0, size_resp);
+
+      // copy L2 header and ARP response packet into response frame
+      memcpy(resp, resp_l2_h, sizeof(struct L2_hdr));
+      memcpy((char *)resp + sizeof(struct L2_hdr), resp_arp_p, sizeof(struct ARP_pkt));
+
+      // calculate and set checksum
+      resp_l2_h->checksum = in_cksum(resp, size_resp);
+      memcpy(resp, resp_l2_h, sizeof(struct L2_hdr)); // update frame w/ checksum
+
+      // send the ARP response
+      fish_l1_send(resp);
+
+      free(resp);
+      free(resp_arp_p);
+      free(resp_l2_h);
+   } 
+   // handle ARP Response
+   else if (ntohl(arp_p->query_type) == 2) { // ARP Response
+      fish_arp.add_arp_entry(arp_p->l2addr, arp_p->queried_l3addr, 180);
+   }
+
+   free(l2_h);
+   free(arp_p);
+}
+
+
+
+void my_send_arp_request(fnaddr_t l3addr) {
+    // create ARP request packet
+    struct ARP_pkt *arp_h = malloc(sizeof(struct ARP_pkt));
+    memset(arp_h, 0, sizeof(struct ARP_pkt));
+    arp_h->query_type = htonl(1);
+    arp_h->queried_l3addr = l3addr;
+    arp_h->l2addr = fish_getl2address();
+
+    // create L2 header for ARP request
+    struct L2_hdr *l2_h = malloc(sizeof(struct L2_hdr));
+    memset(l2_h, 0, sizeof(struct L2_hdr));
+    l2_h->dst = ALL_L2_NEIGHBORS; // bcast dst for ARP request
+    l2_h->src = fish_getl2address();
+    l2_h->protocol = 2; // ARP protocol type
+    l2_h->len = htons(sizeof(struct L2_hdr) + sizeof(struct ARP_pkt));
+
+    // allocate memory for the ARP request frame
+    uint16_t size_frame = sizeof(struct L2_hdr) + sizeof(struct ARP_pkt);
+    void *frame_send = malloc(size_frame);
+
+    // copy L2 header and ARP packet into frame
+    memcpy(frame_send, l2_h, sizeof(struct L2_hdr));
+    memcpy(frame_send + sizeof(struct L2_hdr), arp_h, sizeof(struct ARP_pkt));
+
+    // checksum
+    l2_h->checksum = in_cksum(frame_send, size_frame);
+    memcpy(frame_send, l2_h, sizeof(struct L2_hdr));
+
+    // send the ARP request
+    fish_l1_send(frame_send);
+
+    free(arp_h);
+    free(l2_h);
+    free(frame_send);
 }
 
 void my_add_arp_entry(fn_l2addr_t l2addr, fnaddr_t addr, int timeout)
@@ -284,8 +371,8 @@ int main(int argc, char **argv)
    // Examples of overriding function pointers for program 2 base functionality
    fish_l2.fishnode_l2_receive = &my_fishnode_l2_receive;
    fish_l2.fish_l2_send = &my_fish_l2_send;
-   // fish_arp.arp_received = &my_arp_received;
-   // fish_arp.send_arp_request = &my_send_arp_request;
+   fish_arp.arp_received = &my_arp_received;
+   fish_arp.send_arp_request = &my_send_arp_request;
    // Full functionality functions
    // fish_arp.add_arp_entry = &my_add_arp_entry;
    // fish_arp.resolve_fnaddr = &my_resolve_fnaddr;

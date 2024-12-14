@@ -1,6 +1,6 @@
+#include "smartalloc.h"
 #include "fish.h"
 #include "fishnode.h"
-#include "smartalloc.h"
 #include <assert.h>
 #include <signal.h>
 #include <string.h>
